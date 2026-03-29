@@ -154,6 +154,12 @@ input:focus { border-color: var(--accent-emerald); background: rgba(0,0,0,0.4); 
     display: flex; align-items: center; gap: 20px;
 }
 
+.encryption-notice { 
+    display: flex; align-items: center; gap: 6px; 
+    font-size: 0.7rem; color: var(--text-muted); margin-top: 4px; 
+}
+.encryption-notice svg { color: var(--accent-emerald); fill: currentColor; }
+
 .messages-viewport { 
     flex: 1; overflow-y: auto; padding: 40px; 
     display: flex; flex-direction: column; gap: 24px;
