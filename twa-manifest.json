@@ -1,0 +1,42 @@
+{
+  "packageId": "com.aadi.chitchat",
+  "host": "YOUR_DOMAIN",
+  "name": "ChitChat",
+  "launcherName": "ChitChat",
+  "display": "standalone",
+  "themeColor": "#00c853",
+  "navigationColor": "#0f172a",
+  "navigationColorDark": "#0f172a",
+  "navigationDividerColor": "#0f172a",
+  "navigationDividerColorDark": "#0f172a",
+  "backgroundColor": "#0f172a",
+  "enableNotifications": true,
+  "startUrl": "/",
+  "iconUrl": "https://YOUR_DOMAIN/icon-512.png",
+  "maskableIconUrl": "https://YOUR_DOMAIN/icon-512-maskable.png",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "./android.keystore",
+    "alias": "chitchat-key"
+  },
+  "appVersionCode": 1,
+  "appVersionName": "1.0.0",
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "https://YOUR_DOMAIN/manifest.json",
+  "fallbackType": "customtabs",
+  "features": {
+    "locationDelegation": {
+      "enabled": false
+    },
+    "playBilling": {
+      "enabled": false
+    }
+  },
+  "enableSiteSettingsShortcut": true,
+  "orientation": "default",
+  "fingerprints": [
+    {
+      "value": "YOUR_SHA256"
+    }
+  ]
+}

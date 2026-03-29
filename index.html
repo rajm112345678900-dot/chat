@@ -16,6 +16,13 @@
     <!-- Style -->
     <link rel="stylesheet" href="style.css">
 
+    <!-- PWA Meta Tags -->
+    <meta name="theme-color" content="#00c853">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/png" href="icon-192.png">
+
     <!-- Emoji Picker (Emoji Mart) -->
     <script src="https://cdn.jsdelivr.net/npm/emoji-mart@latest/dist/browser.js"></script>
 </head>
@@ -162,6 +169,17 @@
 
     <!-- Firebase SDK & App Logic -->
     <script type="module" src="app.js?v=5"></script>
+
+    <!-- Service Worker Registration -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js')
+                    .then(reg => console.log('SW Registered', reg))
+                    .catch(err => console.log('SW Registration Failed', err));
+            });
+        }
+    </script>
 </body>
 
 </html>
