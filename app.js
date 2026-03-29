@@ -139,7 +139,10 @@ document.addEventListener('DOMContentLoaded', () => {
     dom.createRoomBtn?.addEventListener('click', handleCreateRoom);
     dom.joinRoomBtn?.addEventListener('click', handleJoinRoom);
 
-    // 4. Sidebar / Utility
+    // 4. File Sharing
+    dom.fileUpload?.addEventListener('change', handleFileUpload);
+
+    // 5. Sidebar / Utility
     dom.leaveRoomBtn?.addEventListener('click', leaveRoom);
     dom.copyCodeBtn?.addEventListener('click', () => {
         navigator.clipboard.writeText(currentRoom.code);
@@ -160,9 +163,6 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             const pickerWrap = document.createElement('div');
             pickerWrap.style.cssText = "position:absolute;bottom:100px;left:40px;display:none;z-index:1000";
-            pickerWrap.appendChild(picker);
-            document.body.appendChild(pickerWrap);
-
             dom.emojiBtn.addEventListener('click', () => {
                 pickerWrap.style.display = (pickerWrap.style.display === 'none' ? 'block' : 'none');
             });
@@ -173,6 +173,17 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) {
         console.error("EmojiMart Plugin Fail:", e);
     }
+
+    // 6. Lifecycle Management (Senior Refactor)
+    window.addEventListener('beforeunload', () => {
+        if (currentRoom.id) leaveRoom();
+    });
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden' && isTyping) {
+            setTypingStatus(false);
+        }
+    });
 });
 
 // ==========================================
@@ -247,7 +258,13 @@ async function enterRoom(roomId, roomName, roomCode) {
             const m = d.data();
             const div = document.createElement('div');
             div.className = 'member-item';
-            div.innerHTML = `<div class="user-avatar">${m.name.charAt(0)}</div><div class="status-dot online"></div><span>${m.name}</span>`;
+            div.innerHTML = `
+                <div class="user-avatar-wrap">
+                    <div class="user-avatar">${m.name.charAt(0)}</div>
+                    <div class="status-dot online"></div>
+                </div>
+                <span class="member-name">${m.name} ${d.id === currentUser.uid ? '(You)' : ''}</span>
+            `;
             dom.memberList.appendChild(div);
         });
     });
@@ -273,6 +290,39 @@ function handleSend() {
     setTypingStatus(false);
 }
 
+async function handleFileUpload(e) {
+    const file = e.target.files[0];
+    if (!file || !currentRoom.id) return;
+
+    const isImage = file.type.startsWith('image/');
+    const type = isImage ? 'image' : 'file';
+    const fileName = `${Date.now()}_${file.name}`;
+    const storageRef = ref(storage, `rooms/${currentRoom.id}/${fileName}`);
+
+    try {
+        console.log(`Uploading ${file.name}...`);
+        sendSystemMsg(`Uploading ${isImage ? 'image' : 'file'}: ${file.name}...`);
+        
+        const snapshot = await uploadBytes(storageRef, file);
+        const fileUrl = await getDownloadURL(snapshot.ref);
+
+        await addDoc(collection(db, "rooms", currentRoom.id, "messages"), {
+            text: file.name,
+            fileUrl,
+            senderName: currentUser.name,
+            senderId: currentUser.uid,
+            type,
+            timestamp: serverTimestamp()
+        });
+        
+        console.log("File uploaded successfully.");
+        dom.fileUpload.value = ''; // Reset input
+    } catch (err) {
+        console.error("Upload Fail:", err);
+        alert("Upload failed! Check your Firebase Storage rules.");
+    }
+}
+
 function renderMsg(data) {
     if (!data.senderId && data.type !== 'system') return; // Defensive check
     
@@ -291,8 +341,29 @@ function renderMsg(data) {
         div.innerHTML = `<div class="bubble">${data.text}</div>`;
     } else {
         let content = `<p>${data.text}</p>`;
-        if (data.type === 'image') content = `<img src="${data.fileUrl}" class="img-preview" onclick="window.open('${data.fileUrl}')">`;
-        else if (data.type === 'file') content = `<a href="${data.fileUrl}" target="_blank" class="file-card">📄 Download File</a>`;
+        
+        if (data.type === 'image') {
+            content = `
+                <div class="img-preview-container">
+                    <img src="${data.fileUrl}" class="img-preview" alt="User Image" onclick="window.open('${data.fileUrl}')">
+                </div>
+            `;
+        } else if (data.type === 'file') {
+            content = `
+                <a href="${data.fileUrl}" target="_blank" class="file-card">
+                    <div class="file-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z" />
+                            <path d="M13 2v7h7" />
+                        </svg>
+                    </div>
+                    <div class="file-info">
+                        <span class="file-name">${data.text}</span>
+                        <span class="file-action">Click to Download</span>
+                    </div>
+                </a>
+            `;
+        }
         
         div.innerHTML = `
             ${!isMe ? `<span class="sender-name">${data.senderName}</span>` : ''}
@@ -325,25 +396,10 @@ async function leaveRoom() {
         dom.dashboardOverlay.classList.add('active');
         currentRoom = { id: null };
         dom.msgViewport.innerHTML = '';
-        setTimeout(() => checkRoomCleanup(rid), 3000);
     } catch (err) { console.error("Leave Fail:", err); }
 }
 
-async function checkRoomCleanup(roomId) {
-    const snap = await getDocs(collection(db, "rooms", roomId, "members"));
-    if (snap.empty) {
-        console.log("Empty room detected. Performing deep cleanup...");
-        const collections = ["messages", "members", "typing"];
-        const batch = writeBatch(db);
-        for (const c of collections) {
-            const s = await getDocs(collection(db, "rooms", roomId, c));
-            s.forEach(d => batch.delete(d.ref));
-        }
-        batch.delete(doc(db, "rooms", roomId));
-        await batch.commit();
-        console.log("Room deleted successfully.");
-    }
-}
+// Room cleanup now handled by Firebase Cloud Function for security.
 
 // 6. Typing Sync
 dom.mainInput.addEventListener('input', () => {
