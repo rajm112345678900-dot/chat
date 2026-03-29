@@ -163,6 +163,10 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             const pickerWrap = document.createElement('div');
             pickerWrap.style.cssText = "position:absolute;bottom:100px;left:40px;display:none;z-index:1000";
+            
+            pickerWrap.appendChild(picker);
+            document.body.appendChild(pickerWrap);
+
             dom.emojiBtn.addEventListener('click', () => {
                 pickerWrap.style.display = (pickerWrap.style.display === 'none' ? 'block' : 'none');
             });
@@ -238,9 +242,9 @@ async function enterRoom(roomId, roomName, roomCode) {
     
     sendSystemMsg(`${currentUser.name} joined the room`);
 
-    // Listen to Messages
+    // Listen to Messages (Fix Vanishing Images)
     const msgQ = query(collection(db, "rooms", roomId, "messages"), orderBy("timestamp", "asc"), limit(100));
-    unsubMessages = onSnapshot(msgQ, (snap) => {
+    unsubMessages = onSnapshot(msgQ, { includeMetadataChanges: true }, (snap) => {
         dom.msgViewport.innerHTML = '';
         if (snap.empty) {
             dom.msgViewport.innerHTML = '<div class="empty-state">No messages yet. Start the conversation!</div>';
