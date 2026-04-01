@@ -44,6 +44,7 @@ let currentRoom = { id: null, name: "", code: "" };
 let unsubMessages, unsubMembers, unsubTyping;
 let isTyping = false;
 let typingTimeout = null;
+let isBotResponding = false; // Prevents bot reply stacking
 
 const dom = {
     loginOverlay: document.getElementById('loginOverlay'),
@@ -242,17 +243,31 @@ async function enterRoom(roomId, roomName, roomCode) {
     
     sendSystemMsg(`${currentUser.name} joined the room`);
 
-    // Listen to Messages (Fix Vanishing Images)
+    // Listen to Messages (Optimized for 1000+ messages)
     const msgQ = query(collection(db, "rooms", roomId, "messages"), orderBy("timestamp", "asc"), limit(100));
     unsubMessages = onSnapshot(msgQ, { includeMetadataChanges: true }, (snap) => {
-        dom.msgViewport.innerHTML = '';
-        if (snap.empty) {
+        // Remove loading state on first snapshot
+        const loadingState = dom.msgViewport.querySelector('.empty-state');
+        if (loadingState) loadingState.remove();
+
+        if (snap.empty && dom.msgViewport.children.length === 0) {
             dom.msgViewport.innerHTML = '<div class="empty-state">No messages yet. Start the conversation!</div>';
-        } else {
-            snap.forEach(d => renderMsg(d.data()));
+            return;
         }
+
+        // Incremental rendering: Only process changes
+        snap.docChanges().forEach((change) => {
+            if (change.type === "added") {
+                renderMsg(change.doc.data());
+            }
+        });
+
+        pruneMessages();
         scrollToBottom();
-    }, (err) => console.error("Snapshot Error:", err));
+    }, (err) => {
+        console.error("Snapshot Error:", err);
+        dom.msgViewport.innerHTML = '<div class="empty-state error">Connection lost. Please refresh.</div>';
+    });
 
     // Listen to Members
     unsubMembers = onSnapshot(collection(db, "rooms", roomId, "members"), (snap) => {
@@ -283,15 +298,31 @@ async function enterRoom(roomId, roomName, roomCode) {
     });
 }
 
-function handleSend() {
+async function handleSend() {
     const text = dom.mainInput.value.trim();
     if (!text || !currentRoom.id) return;
     
+    const originalText = text;
     dom.mainInput.value = '';
-    addDoc(collection(db, "rooms", currentRoom.id, "messages"), {
-        text, senderName: currentUser.name, senderId: currentUser.uid, type: 'text', timestamp: serverTimestamp()
-    });
-    setTypingStatus(false);
+    
+    try {
+        await addDoc(collection(db, "rooms", currentRoom.id, "messages"), {
+            text: originalText, 
+            senderName: currentUser.name, 
+            senderId: currentUser.uid, 
+            type: 'text', 
+            timestamp: serverTimestamp()
+        });
+        setTypingStatus(false);
+        
+        // Trigger Bot Reply if it's not a Bot message itself
+        if (currentUser.name !== "🤖 Bot") {
+            setTimeout(() => botReply(originalText), 1000);
+        }
+    } catch (err) {
+        console.error("Send Msg Fail:", err);
+        alert("Failed to send message. Please check your connection.");
+    }
 }
 
 async function handleFileUpload(e) {
@@ -382,6 +413,21 @@ function scrollToBottom() {
     dom.msgViewport.scrollTo({ top: dom.msgViewport.scrollHeight, behavior: 'smooth' });
 }
 
+/**
+ * Keeps the UI performant by removing old DOM nodes.
+ * Ensures the browser doesn't freeze even with 1000+ database entries.
+ */
+function pruneMessages() {
+    const maxMessages = 100;
+    const messages = dom.msgViewport.querySelectorAll('.msg-row');
+    if (messages.length > maxMessages) {
+        for (let i = 0; i < messages.length - maxMessages; i++) {
+            messages[i].remove();
+        }
+        console.log(`Pruned ${messages.length - maxMessages} old messages from UI.`);
+    }
+}
+
 async function leaveRoom() {
     if (!currentRoom.id) return;
     const rid = currentRoom.id;
@@ -423,5 +469,44 @@ function setTypingStatus(status) {
 }
 
 async function sendSystemMsg(text) {
-    if (currentRoom.id) addDoc(collection(db, "rooms", currentRoom.id, "messages"), { text, type: 'system', timestamp: serverTimestamp() });
+    if (currentRoom.id) {
+        try {
+            await addDoc(collection(db, "rooms", currentRoom.id, "messages"), { 
+                text, type: 'system', timestamp: serverTimestamp() 
+            });
+        } catch (e) { console.error("System Msg Fail:", e); }
+    }
+}
+
+// 7. 🤖 BOT ENGINE
+async function botReply(userMsg) {
+    if (isBotResponding || !currentRoom.id) return;
+    
+    const msg = userMsg.toLowerCase();
+    let reply = "";
+
+    if (msg.includes("hello") || msg.includes("hi")) reply = `Hello ${currentUser.name}! How can I help you today? 👋`;
+    else if (msg.includes("kaise ho")) reply = "Main ek Advanced AI hu, hamesha ki tarah badhiya! 😎";
+    else if (msg.includes("time")) reply = `The current time is ${new Date().toLocaleTimeString()}. 🕒`;
+    else if (msg.includes("room code")) reply = `The secret code for this room is: ${currentRoom.code}`;
+    else if (msg.includes("bye")) reply = "Goodbye! Hope to see you again soon. ✨";
+    
+    if (!reply) return; // Only reply to known patterns to avoid spam
+
+    isBotResponding = true;
+    
+    try {
+        await addDoc(collection(db, "rooms", currentRoom.id, "messages"), {
+            text: reply,
+            senderName: "🤖 Bot",
+            senderId: "system-bot",
+            type: 'text',
+            timestamp: serverTimestamp()
+        });
+    } catch (err) {
+        console.error("Bot Reply Fail:", err);
+    } finally {
+        // Cooldown before next bot reply to prevent loops/stacking
+        setTimeout(() => { isBotResponding = false; }, 2000);
+    }
 }

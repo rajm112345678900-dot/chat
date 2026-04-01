@@ -1,96 +1,81 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ChitChat | Premium Real-time Rooms</title>
-
-    <!-- Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link
-        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&family=Inter:wght@400;500;600&display=swap"
-        rel="stylesheet">
-
-    <!-- Style -->
+    <title>ChitChat - Premium Chat App</title>
     <link rel="stylesheet" href="style.css">
-
-    <!-- PWA Meta Tags -->
-    <meta name="theme-color" content="#00c853">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <link rel="manifest" href="manifest.json">
-    <link rel="icon" type="image/png" href="icon-192.png">
-
-    <!-- Emoji Picker (Emoji Mart) -->
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Outfit:wght@700&display=swap" rel="stylesheet">
+    <!-- Emoji Mart -->
     <script src="https://cdn.jsdelivr.net/npm/emoji-mart@latest/dist/browser.js"></script>
 </head>
-
 <body>
 
     <!-- 1. LOGIN OVERLAY -->
     <div id="loginOverlay" class="overlay active">
-        <div class="overlay-card fade-in">
-            <h1>Welcome to ChitChat</h1>
-            <p>Enter your name to get started</p>
-            <input type="text" id="usernameInput" placeholder="How should we call you?" maxlength="15">
-            <button id="enterBtn" class="primary-btn">Continue</button>
+        <div class="overlay-card">
+            <h1 class="brand" style="justify-content: center; margin-bottom: 20px;">
+                <div class="logo-dot"></div> CHITCHAT
+            </h1>
+            <p style="color: var(--text-dim); margin-bottom: 30px;">Enter your name to start chatting</p>
+            <input type="text" id="usernameInput" placeholder="Your Name" maxlength="20">
+            <button id="enterBtn" class="accent-btn">Continue</button>
         </div>
     </div>
 
     <!-- 2. DASHBOARD OVERLAY -->
     <div id="dashboardOverlay" class="overlay">
-        <div class="overlay-card wide slide-up">
-            <div class="dashboard-header">
-                <h2>Chat Dashboard</h2>
-                <span id="welcomeName"></span>
-            </div>
+        <div class="overlay-card wide">
+            <h2 id="welcomeName" style="margin-bottom: 10px;">Hi there!</h2>
+            <p style="color: var(--text-dim); margin-bottom: 40px;">Create a new room or join an existing one</p>
 
             <div class="dashboard-grid">
-                <div class="dash-box">
-                    <h3>Create Room</h3>
+                <!-- Create Room -->
+                <div class="grid-section">
+                    <h3 style="margin-bottom: 20px; color: var(--accent-emerald);">Create Room</h3>
                     <input type="text" id="newRoomName" placeholder="Room Name">
-                    <input type="password" id="newRoomPass" placeholder="Set Password (Optional)">
+                    <input type="password" id="newRoomPass" placeholder="Optional Password">
                     <button id="createRoomBtn" class="accent-btn">Create & Join</button>
                 </div>
 
                 <div class="divider"><span>OR</span></div>
 
-                <div class="dash-box">
-                    <h3>Join Room</h3>
-                    <input type="text" id="joinRoomCode" placeholder="6-char Code (e.g. ESMBWG)">
-                    <input type="password" id="joinRoomPass" placeholder="Enter Password">
+                <!-- Join Room -->
+                <div class="grid-section">
+                    <h3 style="margin-bottom: 20px; color: var(--accent-blue);">Join Room</h3>
+                    <input type="text" id="joinRoomCode" placeholder="6-Char Room Code" style="text-transform: uppercase;">
+                    <input type="password" id="joinRoomPass" placeholder="Password (if any)">
                     <button id="joinRoomBtn" class="primary-btn">Join Chat</button>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- 3. MAIN CHAT APP -->
+    <!-- 3. MAIN APP CONTAINER -->
     <div id="appContainer" class="app-container">
         <!-- Sidebar -->
-        <aside class="sidebar" id="sidebar">
-            <header class="sidebar-header">
+        <aside id="sidebar" class="sidebar">
+            <div class="sidebar-header">
                 <div class="brand">
-                    <div class="logo-dot"></div>
-                    <span>ChitChat</span>
+                    <div class="logo-dot"></div> CHITCHAT
                 </div>
-                <button id="leaveRoomBtn" class="icon-btn" title="Leave Room">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" />
+                <button class="mobile-only icon-btn" id="mobileMenuBtn">
+                    <svg viewBox="0 0 24 24" class="icon-sm" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 6h16M4 12h16M4 18h16" />
                     </svg>
                 </button>
-            </header>
+            </div>
 
             <div class="room-info-card">
+                <p class="label">Current Room</p>
+                <h3 id="displayRoomName" style="margin: 5px 0 15px;">-</h3>
                 <p class="label">Room Code</p>
                 <div class="code-box">
-                    <span id="displayRoomCode">------</span>
+                    <span id="displayRoomCode">XXXXXX</span>
                     <button id="copyCodeBtn" title="Copy Code">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path
-                                d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10" />
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <path d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3" />
                         </svg>
                     </button>
                 </div>
@@ -98,68 +83,60 @@
 
             <div class="members-section">
                 <div class="section-header">
-                    <span>Members</span>
-                    <span class="count-badge" id="memberCount">0</span>
+                    <span>Members Online</span>
+                    <span id="memberCount">0</span>
                 </div>
-                <div class="member-list" id="memberList"></div>
+                <div id="memberList">
+                    <!-- Members appear here -->
+                </div>
             </div>
 
-            <div class="sidebar-footer">
-                <div class="user-pill">
-                    <div class="status-dot online"></div>
-                    <span id="myUsername">User</span>
-                </div>
+            <div style="padding: 20px; border-top: 1px solid var(--border);">
+                <div id="myUsername" style="font-size: 0.9rem; color: var(--text-dim); margin-bottom: 10px;">-</div>
+                <button id="leaveRoomBtn" class="primary-btn" style="background: rgba(239, 68, 68, 0.1); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.2);">
+                    Leave Room
+                </button>
             </div>
         </aside>
 
-        <!-- Main Workspace -->
+        <!-- Main Chat Area -->
         <main class="main-chat">
             <header class="chat-header">
-                <button id="mobileMenuBtn" class="icon-btn mobile-only">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M4 6h16M4 12h16M4 18h16" />
-                    </svg>
-                </button>
-                <div class="room-title">
-                    <h2 id="displayRoomName">Select a Room</h2>
-                    <p class="encryption-notice">
-                        <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12">
-                            <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z" />
-                        </svg>
-                        End-to-end encryption is active
-                    </p>
+                <div>
+                    <h2 id="roomTitleHeader" style="font-size: 1.2rem;">Live Chat</h2>
+                    <div class="encryption-notice">
+                        <svg viewBox="0 0 24 24" width="12" height="12"><path d="M12 2L4 5v6.09c0 5.05 3.41 9.76 8 10.91 4.59-1.15 8-5.86 8-10.91V5l-8-3zm1 14h-2v-2h2v2zm0-4h-2V7h2v5z"/></svg>
+                        End-to-end synchronized (Optimized Engine)
+                    </div>
                 </div>
             </header>
 
-            <div class="messages-viewport" id="msgViewport">
-                <div class="empty-state">
-                    <p>Welcome to the room!</p>
-                </div>
+            <div id="msgViewport" class="messages-viewport">
+                <div class="empty-state">Loading Chat...</div>
             </div>
 
-            <div class="typing-indicator-bar" id="typingBar"></div>
+            <!-- Custom Typing Indicator -->
+            <div id="typingBar" style="padding: 0 40px; height: 20px; font-size: 0.75rem; color: var(--text-dim); font-style: italic;"></div>
 
             <div class="input-area">
                 <div class="input-actions">
-                    <button class="tool-btn" id="emojiBtn" title="Emoji">
-                        <svg viewBox="0 0 24 24" fill="none" class="icon-sm" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="10" />
-                            <path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01" />
+                    <button id="emojiBtn" class="tool-btn" title="Emoji">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/>
                         </svg>
                     </button>
-                    <label class="tool-btn" title="Upload File">
-                        <input type="file" id="fileUpload" hidden>
-                        <svg viewBox="0 0 24 24" fill="none" class="icon-sm" stroke="currentColor" stroke-width="2">
-                            <path
-                                d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+                    <label class="tool-btn" title="Upload File" style="cursor: pointer;">
+                        <input type="file" id="fileUpload" style="display: none;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
                         </svg>
                     </label>
                 </div>
                 <div class="msg-input-wrap">
-                    <input type="text" id="mainInput" placeholder="Type a message..." autocomplete="off">
+                    <input type="text" id="mainInput" placeholder="Type your message..." autocomplete="off">
                 </div>
-                <button class="send-btn" id="sendBtn">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <button id="sendBtn" class="send-btn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
                         <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
                     </svg>
                 </button>
@@ -167,19 +144,8 @@
         </main>
     </div>
 
-    <!-- Firebase SDK & App Logic -->
-    <script type="module" src="app.js?v=5"></script>
+    <!-- MAIN ENGINE -->
+    <script type="module" src="app.js"></script>
 
-    <!-- Service Worker Registration -->
-    <script>
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('sw.js')
-                    .then(reg => console.log('SW Registered', reg))
-                    .catch(err => console.log('SW Registration Failed', err));
-            });
-        }
-    </script>
 </body>
-
 </html>
