@@ -258,3 +258,23 @@ input:focus { border-color: var(--accent-emerald); background: rgba(0,0,0,0.4); 
     .sidebar { position: absolute; left: -320px; z-index: 1001; box-shadow: 20px 0 50px rgba(0,0,0,0.8); }
     .sidebar.open { left: 0; }
 }
+
+/* EMPTY STATE */
+.empty-state {
+    align-self: center;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    font-style: italic;
+    margin: auto;
+    opacity: 0.6;
+}
+
+/* TOAST & BANNER ANIMATIONS */
+@keyframes slideUp {
+    from { opacity: 0; transform: translateX(-50%) translateY(12px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+@keyframes slideDown {
+    from { opacity: 0; transform: translateY(-100%); }
+    to   { opacity: 1; transform: translateY(0); }
+}
