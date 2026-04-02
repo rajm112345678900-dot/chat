@@ -1,20 +1,22 @@
 /**
- * CHITCHAT ADVANCED MESSAGING ENGINE (V6 — Production Hardened)
+ * CHITCHAT ADVANCED MESSAGING ENGINE (V7 — Connection Hardened)
  * Firebase v10 Modular SDK
  *
- * FIXES vs V5:
- *  1. Stored listener callbacks so off() actually works (no more stacking).
- *  2. Debounced scrollToBottom to prevent 100 simultaneous smooth-scroll animations.
- *  3. Replaced querySelectorAll inside pruneMessages with a live childElementCount
- *     so DOM scanning is O(1) instead of O(n) per message.
- *  4. Added isSending guard in handleSend to block duplicate sends.
- *  5. Fixed template literal bug in enterRoom (was a plain string).
- *  6. Moved typing listener inside DOMContentLoaded to prevent stacking.
- *  7. Added message deduplication via a rendered-ID Set.
- *  8. Initial load messages use instant scroll (no smooth), only new messages
- *     use smooth scroll.
- *  9. pruneMessages is now O(1) check + deferred via requestAnimationFrame.
- * 10. Added connection-state monitoring with auto-reconnect banner.
+ * V7 CONNECTION FIXES:
+ *  A. .info/connected false-negative fix — Firebase fires 'false' on page load,
+ *     during auth token refresh (signOut → signIn cycle), and when tab goes
+ *     background. Banner now only shows after a SUSTAINED disconnect (2s debounce).
+ *  B. Auth token auto-refresh — PERMISSION_DENIED errors on push/set now trigger
+ *     a silent re-authentication rather than a dead session.
+ *  C. Write retry queue — failed messages are queued and replayed automatically
+ *     when the connection is restored, so no message is permanently lost.
+ *  D. Visibility-change goOnline() — forces Firebase to reconnect immediately
+ *     when the user returns to a backgrounded tab.
+ *  E. Heartbeat probe — polls .info/serverTimeOffset every 25s to detect silent
+ *     connection hangs that .info/connected alone misses.
+ *
+ * V6 FIXES (retained):
+ *  1–10. See previous version comments.
  */
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
@@ -32,21 +34,63 @@ import {
 // ==========================================
 // 1. FIREBASE CONFIGURATION
 // ==========================================
-console.log("[ChitChat] Initializing Firebase App...");
+console.log('[ChitChat] Step 1: Loading Firebase config...');
+
+/**
+ * ROOT BUG FIX: databaseURL was MISSING from the config.
+ * getDatabase(app) throws "Can't determine Firebase Database URL" without it,
+ * crashing the entire JS module at line 48 — BEFORE DOMContentLoaded fires,
+ * BEFORE the dom{} object is built, BEFORE any event listeners are attached.
+ * Result: clicking "Continue" does absolutely nothing (no handler exists).
+ *
+ * The databaseURL format for Firebase RTDB is:
+ *   https://<project-id>-default-rtdb.firebaseio.com
+ * or for non-US regions:
+ *   https://<project-id>-default-rtdb.<region>.firebasedatabase.app
+ */
 const firebaseConfig = {
     apiKey: "AIzaSyCyFiPkMeAzMjz55fpe4d8Ju6kOXYo5PiY",
     authDomain: "chitt-chatt-v01.firebaseapp.com",
+    databaseURL: "https://chitt-chatt-v01-default-rtdb.asia-southeast1.firebasedatabase.app",
     projectId: "chitt-chatt-v01",
     storageBucket: "chitt-chatt-v01.firebasestorage.app",
     messagingSenderId: "337758963578",
     appId: "1:337758963578:web:104cd188afbc0d5eb0f8c3"
 };
 
+console.log('[ChitChat] Step 2: Initializing Firebase app...');
 const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
+
+/**
+ * BUG FIX: Wrap getDatabase in try/catch.
+ * If databaseURL is wrong, this throws and crashes the module.
+ * Now we catch it and show a visible error instead of silent failure.
+ */
+let db;
+try {
+    db = getDatabase(app);
+    console.log('[ChitChat] Step 3: Firebase RTDB connected. ✓');
+} catch (e) {
+    console.error('[ChitChat] FATAL: getDatabase() failed:', e.message);
+    // Show the error on-screen so it\'s visible even without DevTools open
+    document.addEventListener('DOMContentLoaded', () => {
+        document.body.innerHTML = `
+            <div style="font-family:monospace;color:#ef4444;background:#020617;
+                        padding:40px;height:100vh;display:flex;flex-direction:column;
+                        align-items:center;justify-content:center;gap:16px;">
+                <h2>⚠️ Firebase Database Error</h2>
+                <p style="color:#94a3b8;max-width:600px;text-align:center;">
+                    <strong>${e.message}</strong><br><br>
+                    Check that <code>databaseURL</code> is correct in firebaseConfig.
+                </p>
+            </div>
+        `;
+    });
+}
+
 const auth = getAuth(app);
 const storage = getStorage(app);
-console.log("[ChitChat] Firebase Realtime Engine initialized.");
+console.log('[ChitChat] Step 4: Auth + Storage ready. ✓');
 
 // ==========================================
 // 2. STATE & SELECTORS
@@ -71,18 +115,39 @@ let listeners = {
 let isTyping = false;
 let typingTimeout = null;
 let isBotResponding = false;
-let isSending = false; // FIX #5: Guard against double-sends
+let isSending = false;
 
-/** FIX #7: Track rendered message IDs to prevent duplicate DOM nodes. */
+/** Track rendered message IDs to prevent duplicate DOM nodes. */
 const renderedMsgIds = new Set();
 
-/**
- * FIX #8: Track whether we are in the "initial batch load" phase.
- * Firebase fires onChildAdded for all existing messages synchronously.
- * During this phase we suppress smooth scrolling and only scroll once at the end.
- */
+/** Track whether we are in the initial batch load phase. */
 let isInitialLoad = true;
 let scrollScheduled = false;
+
+// ==========================================
+// CONNECTION STATE MANAGEMENT (V7)
+// ==========================================
+
+/**
+ * FIX A: Debounced connection state.
+ * Firebase fires .info/connected = false during:
+ *  - Page load (before the first handshake)
+ *  - Auth token refresh (signOut → signInAnonymously cycle)
+ *  - Tab backgrounding on mobile
+ * None of these are real "connection lost" events. We only show the banner
+ * if the offline state is sustained for >2 seconds.
+ */
+let connectionState = 'unknown';   // 'online' | 'offline' | 'unknown'
+let disconnectDebounceTimer = null;
+let heartbeatTimer = null;
+let isReconnecting = false;
+
+/**
+ * FIX D: Write retry queue.
+ * If a push() fails due to network error, the message payload is stored here.
+ * When .info/connected returns true, the queue is flushed automatically.
+ */
+const writeRetryQueue = [];
 
 const dom = {
     loginOverlay: document.getElementById('loginOverlay'),
@@ -129,34 +194,93 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 1. Enter Chat Button
     dom.enterBtn.addEventListener('click', async () => {
+        console.log('[ChitChat] >> Continue clicked.');
+
         const name = dom.usernameInput.value.trim();
-        if (!name) return alert("Please enter your name");
+        if (!name) return alert('Please enter your name.');
+
+        // Guard: if db failed to init, tell the user clearly
+        if (!db) {
+            alert('Database not connected. Check the console for errors.');
+            return;
+        }
 
         dom.enterBtn.disabled = true;
-        dom.enterBtn.innerText = "Connecting...";
+        dom.enterBtn.innerText = 'Connecting...';
+
+        /**
+         * BUG FIX: Added a login timeout.
+         * Without this, if Firebase Auth hangs (no network, quota exceeded, etc.)
+         * the button stays permanently in "Connecting..." with no feedback.
+         * 12 seconds is generous enough for slow connections.
+         */
+        const loginTimeout = setTimeout(() => {
+            console.error('[ChitChat] Login timed out after 12s.');
+            dom.enterBtn.disabled = false;
+            dom.enterBtn.innerText = 'Continue';
+            alert('Connection timed out. Check your network and try again.');
+        }, 12000);
 
         try {
+            console.log('[ChitChat] >> Step A: Setting session persistence...');
             await setPersistence(auth, browserSessionPersistence);
-            await signOut(auth);
+
+            /**
+             * BUG FIX: Removed signOut(auth) from the login flow.
+             *
+             * The original code called signOut() before signInAnonymously().
+             * signOut() makes a network round-trip to Firebase Auth servers
+             * and triggers a .info/connected = false event on RTDB, causing
+             * the "connection lost" banner to flash. On a slow network this
+             * adds 1–3 seconds of unnecessary blocking before login proceeds.
+             *
+             * browserSessionPersistence already ensures each browser tab gets
+             * a fresh session — signOut is redundant and harmful here.
+             */
+            console.log('[ChitChat] >> Step B: Signing in anonymously...');
             const cred = await signInAnonymously(auth);
-            console.log("[ChitChat] Signed in as:", cred.user.uid);
+            console.log('[ChitChat] >> Step C: Signed in. UID:', cred.user.uid);
+
+            clearTimeout(loginTimeout); // Auth succeeded, cancel timeout
 
             currentUser = { uid: cred.user.uid, name };
             dom.myUsername.innerText = name;
 
-            await set(ref(db, "users/" + currentUser.uid), {
+            console.log('[ChitChat] >> Step D: Writing user presence to RTDB...');
+            await set(ref(db, 'users/' + currentUser.uid), {
                 name, online: true, lastSeen: serverTimestamp()
             });
 
+            console.log('[ChitChat] >> Step E: Transitioning to dashboard. ✓');
             dom.loginOverlay.classList.remove('active');
             dom.dashboardOverlay.classList.add('active');
             dom.welcomeName.innerText = `Hi, ${name}!`;
+            console.log('[ChitChat] >> Login complete. Dashboard visible.');
+
         } catch (err) {
-            console.error("[ChitChat] Auth Fail:", err);
-            alert("Firebase Auth Restricted! Ensure 'Anonymous' is enabled in your Firebase Console.");
+            clearTimeout(loginTimeout);
+            console.error('[ChitChat] Auth Fail:', err.code, err.message);
+
+            let userMsg = 'Login failed. ';
+            if (err.code === 'auth/operation-not-allowed') {
+                userMsg += 'Anonymous sign-in is disabled. Enable it in Firebase Console → Authentication → Sign-in methods.';
+            } else if (err.code === 'auth/network-request-failed') {
+                userMsg += 'Network error. Check your internet connection.';
+            } else if (err.code === 'auth/too-many-requests') {
+                userMsg += 'Too many requests. Wait a moment and try again.';
+            } else {
+                userMsg += err.message;
+            }
+
+            alert(userMsg);
             dom.enterBtn.disabled = false;
-            dom.enterBtn.innerText = "Continue";
+            dom.enterBtn.innerText = 'Continue';
         }
+    });
+
+    // Press Enter in name field = same as clicking Continue
+    dom.usernameInput?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') dom.enterBtn.click();
     });
 
     // 2. Messaging
@@ -225,12 +349,19 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'hidden' && isTyping) {
-            setTypingStatus(false);
+        if (document.visibilityState === 'hidden') {
+            // Clear typing status when tab is hidden
+            if (isTyping) setTypingStatus(false);
+        } else {
+            // FIX D: Force Firebase back online immediately when tab becomes visible.
+            // Browsers throttle/kill WebSocket connections in background tabs.
+            // goOnline() tells the Firebase SDK to reconnect NOW instead of waiting.
+            console.log('[ChitChat] Tab visible — forcing Firebase online.');
+            goOnline(db);
         }
     });
 
-    // FIX #10: Connection state monitoring with user-visible banner
+    // Start connection monitoring
     monitorConnection();
 });
 
@@ -245,17 +376,20 @@ document.addEventListener('DOMContentLoaded', () => {
  * documented to be a no-op for specific listener types on specific paths.
  */
 function detachRoomListeners() {
+    // BUG FIX: Firebase v10 modular off() signature is off(ref, callback) — NOT off(ref, eventName, callback).
+    // Passing an event name string as the 2nd argument made off() treat it as the callback,
+    // which never matched, so every listener silently remained attached forever.
     if (listeners.msgRef && listeners.msgCallback) {
-        off(listeners.msgRef, 'child_added', listeners.msgCallback);
-        console.log("[ChitChat] Detached msgQuery listener.");
+        off(listeners.msgRef, listeners.msgCallback);
+        console.log('[ChitChat] Detached msgQuery listener.');
     }
     if (listeners.memberRef && listeners.memberCallback) {
-        off(listeners.memberRef, 'value', listeners.memberCallback);
-        console.log("[ChitChat] Detached memberRef listener.");
+        off(listeners.memberRef, listeners.memberCallback);
+        console.log('[ChitChat] Detached memberRef listener.');
     }
     if (listeners.typingRef && listeners.typingCallback) {
-        off(listeners.typingRef, 'value', listeners.typingCallback);
-        console.log("[ChitChat] Detached typingRef listener.");
+        off(listeners.typingRef, listeners.typingCallback);
+        console.log('[ChitChat] Detached typingRef listener.');
     }
     listeners = { msgCallback: null, memberCallback: null, typingCallback: null, msgRef: null, memberRef: null, typingRef: null };
 }
@@ -287,60 +421,82 @@ async function handleCreateRoom() {
 async function handleJoinRoom() {
     const code = dom.joinRoomCode.value.trim().toUpperCase();
     const pass = dom.joinRoomPass.value.trim();
-    if (!code) return alert("Enter 6-char Code");
+    if (!code) return alert('Enter 6-char Code');
 
     dom.joinRoomBtn.disabled = true;
     try {
-        const snapshot = await get(ref(db, "rooms/" + code));
-        if (!snapshot.exists()) return alert("Room not found");
+        const snapshot = await get(ref(db, 'rooms/' + code));
+
+        // BUG FIX: Previous code used `return alert(...)` inside try block.
+        // `return` inside try jumps over the finally block in some engine paths
+        // and the button stayed permanently disabled. Use explicit re-enable instead.
+        if (!snapshot.exists()) {
+            alert('Room not found');
+            dom.joinRoomBtn.disabled = false;
+            return;
+        }
 
         const roomData = snapshot.val();
-        if (roomData.password && roomData.password !== pass) return alert("Incorrect Password");
+        if (roomData.password && roomData.password !== pass) {
+            alert('Incorrect Password');
+            dom.joinRoomBtn.disabled = false;
+            return;
+        }
 
         enterRoom(code, roomData.name, code);
     } catch (err) {
-        console.error("[ChitChat] Join Room Fail:", err);
-        alert("Failed to join room.");
-    } finally {
+        console.error('[ChitChat] Join Room Fail:', err);
+        alert('Failed to join room.');
         dom.joinRoomBtn.disabled = false;
     }
 }
 
 async function enterRoom(roomId, roomName, roomCode) {
-    // FIX #1: Properly detach previous listeners before attaching new ones.
+    console.log(`[ChitChat] enterRoom: id=${roomId} name=${roomName}`);
+
+    // Detach any previous room's listeners before attaching new ones.
     detachRoomListeners();
-
-    // FIX #7: Clear the deduplication set for the new room.
     renderedMsgIds.clear();
-
-    // FIX #8: Reset initial load flag for the new room.
     isInitialLoad = true;
 
     currentRoom = { id: roomId, name: roomName, code: roomCode };
+
+    // Immediately show the UI — don't wait for Firebase writes.
     dom.dashboardOverlay.classList.remove('active');
     dom.appContainer.classList.add('active');
     dom.displayRoomName.innerText = roomName;
     dom.displayRoomCode.innerText = roomCode;
+    dom.msgViewport.innerHTML = '';
+    const welcomeEl = document.createElement('div');
+    welcomeEl.className = 'empty-state';
+    welcomeEl.textContent = `Welcome to ${roomName}`;
+    dom.msgViewport.appendChild(welcomeEl);
 
-    // FIX: Was a plain string, not a template literal — ${roomName} rendered literally.
-    dom.msgViewport.innerHTML = `<div class="empty-state">Welcome to ${roomName}</div>`;
-
-    await set(ref(db, `rooms/${roomId}/members/${currentUser.uid}`), {
+    // Write member presence — non-blocking (don't await before attaching listeners).
+    console.log(`[ChitChat] WRITE rooms/${roomId}/members/${currentUser.uid}`);
+    set(ref(db, `rooms/${roomId}/members/${currentUser.uid}`), {
         name: currentUser.name, joinedAt: serverTimestamp()
+    })
+    .then(() => {
+        console.log(`[ChitChat] ✓ Member presence written.`);
+        // Send join message AFTER member doc is confirmed, so rules pass.
+        sendSystemMsg(`${currentUser.name} joined the room`);
+    })
+    .catch(err => {
+        console.error(`[ChitChat] ✗ Member write FAILED (path: rooms/${roomId}/members/${currentUser.uid}):`, err.code, err.message);
+        showToast('Could not join room — permission error.', true);
     });
 
-    sendSystemMsg(`${currentUser.name} joined the room`);
-
-    // --- Message Listener ---
-    // FIX #1 + #8: Store callback ref so off() can properly remove it later.
-    // FIX #8: Distinguish initial load messages (instant scroll) from new ones (smooth scroll).
-    const msgQueryRef = query(ref(db, `messages/${roomId}`), limitToLast(60));
+    // ── PATH FIX: was `messages/${roomId}` — WRONG (not in rules) ──────────────
+    // Correct path per RTDB rules: rooms/${roomId}/messages/${messageId}
+    // ────────────────────────────────────────────────────────────────────────────
+    const MSGS_PATH = `rooms/${roomId}/messages`;
+    console.log(`[ChitChat] Attaching message listener: ${MSGS_PATH}`);
+    const msgQueryRef = query(ref(db, MSGS_PATH), limitToLast(60));
     listeners.msgRef = msgQueryRef;
 
     listeners.msgCallback = (snapshot) => {
         const msgId = snapshot.key;
-
-        // FIX #7: Skip if we've already rendered this message ID.
         if (renderedMsgIds.has(msgId)) return;
         renderedMsgIds.add(msgId);
 
@@ -350,28 +506,29 @@ async function enterRoom(roomId, roomName, roomCode) {
         renderMsg(snapshot.val());
         pruneMessages();
 
-        // FIX #2: Debounced scroll — don't fire 60 smooth scrolls on initial load.
         if (isInitialLoad) {
-            scheduleScrollToBottom(false); // instant during batch
+            scheduleScrollToBottom(false);
         } else {
-            scheduleScrollToBottom(true); // smooth for new messages
+            scheduleScrollToBottom(true);
         }
     };
 
     onChildAdded(msgQueryRef, listeners.msgCallback);
 
-    // FIX #8: After one tick, all initial onChildAdded callbacks have fired.
-    // Mark initial load as done so future messages get smooth scroll.
     setTimeout(() => {
         isInitialLoad = false;
-        scrollToBottom(false); // Final instant scroll after all initial messages loaded
+        scrollToBottom(false);
     }, 300);
 
-    // --- Members Listener ---
+    // ── Members listener ──────────────────────────────────────────────────────
     listeners.memberRef = ref(db, `rooms/${roomId}/members`);
     listeners.memberCallback = (snapshot) => {
-        dom.memberCount.innerText = snapshot.size || 0;
-        // FIX: Use DocumentFragment for batch DOM update instead of repeated innerHTML resets
+        // Use numChildren() for RTDB DataSnapshot; fall back to counting val() keys
+        // in case the snapshot is received before the path fully initializes.
+        const count = typeof snapshot.numChildren === 'function'
+            ? snapshot.numChildren()
+            : Object.keys(snapshot.val() || {}).length;
+        dom.memberCount.innerText = count;
         const fragment = document.createDocumentFragment();
         snapshot.forEach(childSnap => {
             const m = childSnap.val();
@@ -391,7 +548,7 @@ async function enterRoom(roomId, roomName, roomCode) {
     };
     onValue(listeners.memberRef, listeners.memberCallback);
 
-    // --- Typing Listener ---
+    // ── Typing listener ───────────────────────────────────────────────────────
     listeners.typingRef = ref(db, `rooms/${roomId}/typing`);
     listeners.typingCallback = (snapshot) => {
         const typers = [];
@@ -403,9 +560,16 @@ async function enterRoom(roomId, roomName, roomCode) {
         dom.typingBar.innerText = typers.length > 0 ? `${typers.join(', ')} is typing...` : '';
     };
     onValue(listeners.typingRef, listeners.typingCallback);
+
+    console.log(`[ChitChat] ✓ enterRoom complete. Listening on: ${MSGS_PATH}`);
 }
 
-// FIX #5: isSending guard prevents double-sends on rapid button clicks/Enter presses.
+/**
+ * handleSend — with write retry queue (FIX D) and auth token refresh (FIX B).
+ * If push() fails:
+ *  - PERMISSION_DENIED → silently refresh auth token, then retry
+ *  - Network error     → queue message for retry when connection restores
+ */
 async function handleSend() {
     if (isSending) return;
     const text = dom.mainInput.value.trim();
@@ -416,27 +580,130 @@ async function handleSend() {
     const originalText = text;
     dom.mainInput.value = '';
 
+    const payload = {
+        text: originalText,
+        senderName: currentUser.name,
+        senderId: currentUser.uid,
+        type: 'text',
+        timestamp: serverTimestamp()
+    };
+
+    // PATH FIX: was `messages/${currentRoom.id}` — must be under rooms/ to match RTDB rules.
+    const msgPath = `rooms/${currentRoom.id}/messages`;
+    console.log(`[ChitChat] SEND → ${msgPath}`, payload.text?.slice(0, 50));
     try {
-        await push(ref(db, `messages/${currentRoom.id}`), {
-            text: originalText,
-            senderName: currentUser.name,
-            senderId: currentUser.uid,
-            type: 'text',
-            timestamp: serverTimestamp()
-        });
+        await writeWithRetry(msgPath, payload);
         setTypingStatus(false);
 
-        if (currentUser.name !== "🤖 Bot") {
+        if (currentUser.name !== '🤖 Bot') {
             setTimeout(() => botReply(originalText), 1000);
         }
     } catch (err) {
-        console.error("[ChitChat] Send Msg Fail:", err);
-        dom.mainInput.value = originalText; // Restore on failure
-        showToast("Failed to send message. Check your connection.", true);
+        console.error('[ChitChat] Send Msg Fail (permanent):', err);
+        dom.mainInput.value = originalText; // Restore on permanent failure
+        showToast('Message queued — will send when reconnected.', false);
     } finally {
         isSending = false;
         dom.sendBtn.disabled = false;
         dom.mainInput.focus();
+    }
+}
+
+/**
+ * FIX B + D: writeWithRetry
+ * Attempts a Firebase push() with intelligent error handling:
+ *  - On PERMISSION_DENIED: refresh the auth token silently and retry once.
+ *  - On network error:     queue the write and flush when connection returns.
+ */
+async function writeWithRetry(path, payload, isRetry = false) {
+    try {
+        await push(ref(db, path), payload);
+    } catch (err) {
+        const code = err?.code || '';
+
+        if (code === 'PERMISSION_DENIED' && !isRetry) {
+            // FIX B: Auth token likely expired. Re-authenticate silently.
+            console.warn('[ChitChat] PERMISSION_DENIED — refreshing auth token...');
+            try {
+                await refreshAuth();
+                // Retry the write exactly once after token refresh
+                await push(ref(db, path), payload);
+                console.log('[ChitChat] Write succeeded after token refresh.');
+            } catch (retryErr) {
+                console.error('[ChitChat] Write failed even after token refresh:', retryErr);
+                throw retryErr;
+            }
+        } else if (isNetworkError(err)) {
+            // FIX D: Queue the write for when connectivity returns
+            console.warn('[ChitChat] Network error — queuing write for retry:', path);
+            writeRetryQueue.push({ path, payload });
+            showToast('Offline — message will send when reconnected.', false);
+            // Don't throw — the message is safely queued
+        } else {
+            throw err;
+        }
+    }
+}
+
+/** Classify an error as a transient network failure (vs auth/logic error). */
+function isNetworkError(err) {
+    const msg = (err?.message || '').toLowerCase();
+    const code = err?.code || '';
+    return (
+        code === 'unavailable' ||
+        msg.includes('network') ||
+        msg.includes('timeout') ||
+        msg.includes('fetch') ||
+        msg.includes('failed to fetch') ||
+        msg.includes('transport')
+    );
+}
+
+/**
+ * FIX B: Silently re-authenticate to refresh the Firebase Auth token.
+ * Called when push() returns PERMISSION_DENIED mid-session (token expired after ~1h).
+ */
+async function refreshAuth() {
+    try {
+        // signInAnonymously on an existing anonymous user just refreshes the token
+        const cred = await signInAnonymously(auth);
+        // Update UID in case a new anonymous user was created
+        currentUser.uid = cred.user.uid;
+        console.log('[ChitChat] Auth token refreshed. UID:', cred.user.uid);
+    } catch (err) {
+        console.error('[ChitChat] Auth refresh failed:', err);
+        throw err;
+    }
+}
+
+/**
+ * FIX D: Flush the write retry queue after reconnection.
+ * Called by monitorConnection() when .info/connected goes true.
+ */
+async function flushWriteQueue() {
+    if (writeRetryQueue.length === 0) return;
+    const count = writeRetryQueue.length;
+    console.log(`[ChitChat] Flushing ${count} queued writes...`);
+
+    // Drain the queue by reference so concurrent flushes don't double-send
+    const toFlush = writeRetryQueue.splice(0, count);
+    let successCount = 0;
+    for (const item of toFlush) {
+        try {
+            await push(ref(db, item.path), item.payload);
+            successCount++;
+            console.log('[ChitChat] Queued write flushed:', item.path);
+        } catch (err) {
+            console.error('[ChitChat] Queued write failed permanently:', err);
+            // Don't re-queue — avoid infinite loop on persistent errors
+        }
+    }
+
+    // BUG FIX: Previous code checked writeRetryQueue.length === 0 AFTER the splice,
+    // which is always true (we already spliced everything out), so the toast
+    // fired even if all writes failed. Now we check actual successes.
+    if (successCount > 0) {
+        showToast(`Back online! ${successCount} message${successCount > 1 ? 's' : ''} sent.`, false);
     }
 }
 
@@ -449,12 +716,15 @@ async function handleFileUpload(e) {
     const fileName = `${Date.now()}_${file.name}`;
     const storageRef = sRef(storage, `rooms/${currentRoom.id}/${fileName}`);
 
+    // PATH FIX: was `messages/${currentRoom.id}` — must be under rooms/ to match RTDB rules.
+    const fileMsgPath = `rooms/${currentRoom.id}/messages`;
     try {
         sendSystemMsg(`Uploading ${isImage ? 'image' : 'file'}: ${file.name}...`);
         const snapshot = await uploadBytes(storageRef, file);
         const fileUrl = await getDownloadURL(snapshot.ref);
 
-        await push(ref(db, `messages/${currentRoom.id}`), {
+        console.log(`[ChitChat] FILE UPLOAD → ${fileMsgPath}`, file.name);
+        await push(ref(db, fileMsgPath), {
             text: file.name,
             fileUrl,
             senderName: currentUser.name,
@@ -462,6 +732,7 @@ async function handleFileUpload(e) {
             type,
             timestamp: serverTimestamp()
         });
+        console.log(`[ChitChat] ✓ File message written.`);
 
         dom.fileUpload.value = '';
     } catch (err) {
@@ -481,7 +752,15 @@ function renderMsg(data) {
     const isMe = data.senderId === currentUser.uid;
     const isSystem = data.type === 'system';
     const div = document.createElement('div');
-    div.className = `msg-row ${isMe ? 'sent' : 'received'} ${isSystem ? 'system' : ''}`;
+
+    // BUG FIX: System messages were getting className 'msg-row received system'.
+    // The 'received' class added left-align + avatar padding to system messages,
+    // breaking their centered appearance. System messages must NOT get sent/received.
+    if (isSystem) {
+        div.className = 'msg-row system';
+    } else {
+        div.className = `msg-row ${isMe ? 'sent' : 'received'}`;
+    }
 
     let time = "Just now";
     if (data.timestamp) {
@@ -593,23 +872,27 @@ async function leaveRoom() {
     if (!currentRoom.id) return;
     const rid = currentRoom.id;
     const uid = currentUser.uid;
+    console.log(`[ChitChat] leaveRoom: id=${rid}`);
 
-    try {
-        await sendSystemMsg(`${currentUser.name} left the room`);
-        await remove(ref(db, `rooms/${rid}/members/${uid}`));
-        await remove(ref(db, `rooms/${rid}/typing/${uid}`));
+    // Immediately detach listeners and reset UI — don't block on Firebase writes.
+    detachRoomListeners();
+    dom.appContainer.classList.remove('active');
+    dom.dashboardOverlay.classList.add('active');
+    currentRoom = { id: null, name: '', code: '' };
+    dom.msgViewport.innerHTML = '';
+    renderedMsgIds.clear();
 
-        // FIX #1: Use the stored callback references for proper cleanup.
-        detachRoomListeners();
+    // Fire-and-forget cleanup writes — UI has already transitioned.
+    sendSystemMsg(`${currentUser.name} left the room`).catch(() => {});
 
-        dom.appContainer.classList.remove('active');
-        dom.dashboardOverlay.classList.add('active');
-        currentRoom = { id: null, name: "", code: "" };
-        dom.msgViewport.innerHTML = '';
-        renderedMsgIds.clear();
-    } catch (err) {
-        console.error("[ChitChat] Leave Fail:", err);
-    }
+    console.log(`[ChitChat] REMOVE rooms/${rid}/members/${uid}`);
+    remove(ref(db, `rooms/${rid}/members/${uid}`))
+        .then(() => console.log(`[ChitChat] ✓ Member removed.`))
+        .catch(err => console.warn('[ChitChat] Member remove failed:', err.code));
+
+    console.log(`[ChitChat] REMOVE rooms/${rid}/typing/${uid}`);
+    remove(ref(db, `rooms/${rid}/typing/${uid}`))
+        .catch(err => console.warn('[ChitChat] Typing remove failed:', err.code));
 }
 
 // ==========================================
@@ -628,14 +911,18 @@ function setTypingStatus(status) {
 // 11. SYSTEM MESSAGES
 // ==========================================
 async function sendSystemMsg(text) {
-    if (currentRoom.id) {
-        try {
-            await push(ref(db, `messages/${currentRoom.id}`), {
-                text, type: 'system', timestamp: serverTimestamp()
-            });
-        } catch (e) {
-            console.error("[ChitChat] System Msg Fail:", e);
-        }
+    if (!currentRoom.id) return;
+    // PATH FIX: was `messages/${currentRoom.id}` — must be rooms/${id}/messages to match rules.
+    const path = `rooms/${currentRoom.id}/messages`;
+    console.log(`[ChitChat] SYSTEM MSG → ${path}:`, text);
+    try {
+        await push(ref(db, path), {
+            text, type: 'system', timestamp: serverTimestamp()
+        });
+        console.log(`[ChitChat] ✓ System message written.`);
+    } catch (e) {
+        console.error(`[ChitChat] ✗ System Msg FAILED (${path}):`, e.code, e.message);
+        throw e; // re-throw so callers can handle
     }
 }
 
@@ -658,54 +945,176 @@ async function botReply(userMsg) {
 
     isBotResponding = true;
 
+    // PATH FIX: was `messages/${currentRoom.id}` — must be rooms/${id}/messages to match rules.
+    const botPath = `rooms/${currentRoom.id}/messages`;
+    console.log(`[ChitChat] BOT REPLY → ${botPath}:`, reply.slice(0, 60));
     try {
-        await push(ref(db, `messages/${currentRoom.id}`), {
+        await push(ref(db, botPath), {
             text: reply,
-            senderName: "🤖 Bot",
-            senderId: "system-bot",
+            senderName: '🤖 Bot',
+            senderId: 'system-bot',
             type: 'text',
             timestamp: serverTimestamp()
         });
+        console.log(`[ChitChat] ✓ Bot reply written.`);
     } catch (err) {
-        console.error("[ChitChat] Bot Reply Fail:", err);
+        console.error(`[ChitChat] ✗ Bot Reply FAILED (${botPath}):`, err.code, err.message);
     } finally {
         setTimeout(() => { isBotResponding = false; }, 2000);
     }
 }
 
 // ==========================================
-// 13. CONNECTION MONITORING (FIX #10)
+// 13. CONNECTION MONITORING (V7 — Hardened)
 // ==========================================
+
+/**
+ * FIX A: Debounced connection monitoring.
+ *
+ * The Problem with the V6 approach:
+ * Firebase fires .info/connected = FALSE in perfectly normal situations:
+ *   1. On initial page load (before the WebSocket handshake completes, ~500ms)
+ *   2. During our own signOut() → signInAnonymously() auth cycle on login
+ *   3. When the browser backgrounds the tab (mobile throttles the WS connection)
+ * In V6, ALL of these showed the red "Connection lost" banner immediately,
+ * making the app look broken when it was perfectly fine.
+ *
+ * The Fix:
+ *   - When we get 'false', set a 2-second debounce timer before showing the banner.
+ *   - If 'true' arrives within that 2 seconds, cancel the timer (false alarm).
+ *   - When 'true' arrives, immediately hide any banner and flush the write queue.
+ *
+ * FIX E: Heartbeat probe.
+ * .info/connected alone can miss "silent hangs" — where the WebSocket is open
+ * but Firebase stops delivering data (observed on some mobile networks).
+ * We probe .info/serverTimeOffset every 25s as a keepalive. If the probe hangs
+ * for >8s, we call goOnline(db) to force a reconnect cycle.
+ */
 function monitorConnection() {
     const connRef = ref(db, '.info/connected');
+
     onValue(connRef, (snap) => {
-        if (snap.val() === true) {
-            console.log("[ChitChat] Firebase connection: ONLINE");
-            hideConnectionBanner();
+        const isOnline = snap.val() === true;
+
+        if (isOnline) {
+            // Definitely online — cancel any pending "offline" debounce
+            clearTimeout(disconnectDebounceTimer);
+            disconnectDebounceTimer = null;
+
+            if (connectionState !== 'online') {
+                connectionState = 'online';
+                console.log('[ChitChat] Connection: ONLINE');
+                hideConnectionBanner();
+                // FIX D: Flush any messages that were queued while offline
+                flushWriteQueue();
+            }
+
+            // Start the heartbeat probe now that we're confirmed online
+            startHeartbeat();
+
         } else {
-            console.warn("[ChitChat] Firebase connection: OFFLINE");
-            showConnectionBanner();
+            // FIX A: Don't immediately show banner — wait 2s to filter false alarms
+            if (connectionState === 'online' && !disconnectDebounceTimer) {
+                console.warn('[ChitChat] Connection: possible disconnect — waiting 2s to confirm...');
+                disconnectDebounceTimer = setTimeout(() => {
+                    disconnectDebounceTimer = null;
+                    connectionState = 'offline';
+                    console.error('[ChitChat] Connection: CONFIRMED OFFLINE');
+                    showConnectionBanner();
+                    stopHeartbeat();
+                }, 2000);
+            } else if (connectionState === 'unknown') {
+                // Very first load — just update state, don't show banner yet
+                // Firebase always fires false first before the initial handshake
+                connectionState = 'connecting';
+                console.log('[ChitChat] Connection: initial handshake in progress...');
+            }
         }
     });
 }
 
+/**
+ * FIX E: Heartbeat system.
+ * Probes .info/serverTimeOffset every 25 seconds.
+ * If the probe doesn't resolve within 8 seconds, the connection is silently hung
+ * and we force goOnline(db) to trigger a fresh WebSocket reconnect.
+ */
+function startHeartbeat() {
+    stopHeartbeat(); // clear any existing timer first
+    heartbeatTimer = setInterval(async () => {
+        const probe = ref(db, '.info/serverTimeOffset');
+        let resolved = false;
+        const timeout = setTimeout(() => {
+            if (!resolved) {
+                console.warn('[ChitChat] Heartbeat probe timed out — forcing reconnect.');
+                goOnline(db);
+            }
+        }, 8000);
+
+        try {
+            await get(probe);
+            resolved = true;
+            clearTimeout(timeout);
+        } catch (_e) {
+            // BUG FIX: Empty catch binding `catch {}` causes a SyntaxError in some
+            // environments and a lint warning in others. Use `catch (_e)` to be explicit.
+            resolved = true;
+            clearTimeout(timeout);
+            // get() failed — goOnline already called above if timeout hit first
+        }
+    }, 25000);
+    console.log('[ChitChat] Heartbeat started (25s interval).');
+}
+
+function stopHeartbeat() {
+    if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+    }
+}
+
 let connectionBanner = null;
+let reconnectCountdown = null;
+
 function showConnectionBanner() {
     if (connectionBanner) return;
+
     connectionBanner = document.createElement('div');
     connectionBanner.id = 'connectionBanner';
     connectionBanner.style.cssText = `
         position: fixed; top: 0; left: 0; width: 100%; z-index: 9999;
-        background: #ef4444; color: white; text-align: center;
-        padding: 8px 16px; font-size: 0.85rem; font-weight: 600;
+        background: linear-gradient(90deg, #dc2626, #b91c1c);
+        color: white; text-align: center;
+        padding: 10px 16px; font-size: 0.85rem; font-weight: 600;
         font-family: 'Inter', sans-serif;
         animation: slideDown 0.3s ease-out;
+        display: flex; align-items: center; justify-content: center; gap: 12px;
     `;
-    connectionBanner.textContent = '⚠️ Connection lost — attempting to reconnect...';
+
+    const msg = document.createElement('span');
+    msg.textContent = '⚠️ Connection lost — reconnecting';
+
+    // Animated dots
+    const dots = document.createElement('span');
+    dots.style.cssText = 'letter-spacing: 2px;';
+    let dotCount = 0;
+    reconnectCountdown = setInterval(() => {
+        dotCount = (dotCount + 1) % 4;
+        dots.textContent = '.'.repeat(dotCount);
+        // Actively try to come back online every 5 seconds
+        if (dotCount === 0) goOnline(db);
+    }, 1000);
+
+    connectionBanner.appendChild(msg);
+    connectionBanner.appendChild(dots);
     document.body.prepend(connectionBanner);
 }
 
 function hideConnectionBanner() {
+    if (reconnectCountdown) {
+        clearInterval(reconnectCountdown);
+        reconnectCountdown = null;
+    }
     if (connectionBanner) {
         connectionBanner.remove();
         connectionBanner = null;

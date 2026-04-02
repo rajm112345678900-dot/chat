@@ -1,0 +1,70 @@
+{
+  "rules": {
+
+    "users": {
+      "$uid": {
+        ".read":  "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid",
+        ".validate": "newData.hasChildren(['name', 'online', 'lastSeen'])
+                   && newData.child('name').isString()
+                   && newData.child('name').val().length >= 1
+                   && newData.child('name').val().length <= 20
+                   && newData.child('online').isBoolean()"
+      }
+    },
+
+    "rooms": {
+      "$roomId": {
+        ".read":  "auth != null",
+        ".validate": "newData.hasChildren(['name', 'code', 'createdBy', 'createdAt'])",
+        ".write": "auth != null && (
+            !data.exists() && newData.child('createdBy').val() === auth.uid
+         || data.exists()  && data.child('createdBy').val() === auth.uid
+        )",
+
+        "members": {
+          "$uid": {
+            ".read":  "auth != null && root.child('rooms/' + $roomId + '/members/' + auth.uid).exists()",
+            ".write": "auth != null && auth.uid === $uid",
+            ".validate": "!newData.exists()
+                       || (newData.hasChildren(['name', 'joinedAt'])
+                           && newData.child('name').isString())"
+          }
+        },
+
+        "messages": {
+          ".read": "auth != null && root.child('rooms/' + $roomId + '/members/' + auth.uid).exists()",
+          "$messageId": {
+            ".write": "auth != null
+                    && root.child('rooms/' + $roomId + '/members/' + auth.uid).exists()
+                    && !data.exists()",
+            ".validate": "newData.hasChildren(['type', 'timestamp', 'text'])
+                       && newData.child('text').isString()
+                       && newData.child('text').val().length >= 1
+                       && newData.child('text').val().length <= 2000
+                       && (newData.child('type').val() === 'text'
+                        || newData.child('type').val() === 'image'
+                        || newData.child('type').val() === 'file'
+                        || newData.child('type').val() === 'system')
+                       && (newData.child('type').val() === 'system'
+                        || newData.child('senderId').val() === auth.uid
+                        || newData.child('senderId').val() === 'system-bot')"
+          }
+        },
+
+        "typing": {
+          "$uid": {
+            ".read":  "auth != null && root.child('rooms/' + $roomId + '/members/' + auth.uid).exists()",
+            ".write": "auth != null && auth.uid === $uid",
+            ".validate": "!newData.exists()
+                       || (newData.hasChildren(['isTyping', 'name'])
+                           && newData.child('isTyping').isBoolean()
+                           && newData.child('name').isString()
+                           && newData.child('name').val().length <= 20)"
+          }
+        }
+      }
+    }
+
+  }
+}
