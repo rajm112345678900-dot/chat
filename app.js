@@ -1159,3 +1159,65 @@ function showToast(message, isError = false) {
     clearTimeout(toastTimeout);
     toastTimeout = setTimeout(() => toast.remove(), 2500);
 }
+
+// ==========================================
+// 15. MOBILE SIDEBAR DRAWER
+// ==========================================
+
+(function initMobileSidebar() {
+    const sidebar        = document.getElementById('sidebar');
+    const toggleBtn      = document.getElementById('sidebarToggleBtn');
+    const overlay        = document.getElementById('sidebarOverlay');
+
+    if (!sidebar || !toggleBtn || !overlay) return;
+
+    /** Open the sidebar drawer */
+    function openSidebar() {
+        sidebar.classList.add('open');
+        overlay.classList.add('active');
+        toggleBtn.classList.add('is-open');
+        toggleBtn.setAttribute('aria-expanded', 'true');
+        // Prevent body scroll while drawer is open
+        document.body.style.overflow = 'hidden';
+    }
+
+    /** Close the sidebar drawer */
+    function closeSidebar() {
+        sidebar.classList.remove('open');
+        overlay.classList.remove('active');
+        toggleBtn.classList.remove('is-open');
+        toggleBtn.setAttribute('aria-expanded', 'false');
+        document.body.style.overflow = '';
+    }
+
+    /** Toggle on hamburger button click */
+    toggleBtn.addEventListener('click', () => {
+        if (sidebar.classList.contains('open')) {
+            closeSidebar();
+        } else {
+            openSidebar();
+        }
+    });
+
+    /** Close when backdrop is tapped */
+    overlay.addEventListener('click', closeSidebar);
+
+    /** Close sidebar on Escape key */
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && sidebar.classList.contains('open')) {
+            closeSidebar();
+        }
+    });
+
+    /**
+     * Auto-close sidebar when viewport is resized to desktop width.
+     * Prevents a stale-open drawer if user rotates device or resizes window.
+     */
+    const mq = window.matchMedia('(max-width: 768px)');
+    mq.addEventListener('change', (e) => {
+        if (!e.matches) {
+            // Switched to desktop — ensure drawer state is reset
+            closeSidebar();
+        }
+    });
+})();

@@ -251,12 +251,133 @@ input:focus { border-color: var(--accent-emerald); background: rgba(0,0,0,0.4); 
 .file-name { font-size: 0.9rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
 .file-action { font-size: 0.7rem; color: var(--accent-emerald); font-weight: 700; text-transform: uppercase; }
 
-/* MOBILE */
+/* ==============================
+   MOBILE SIDEBAR DRAWER SYSTEM
+   ============================== */
+
+/* Hamburger button — hidden on desktop */
+.hamburger-btn {
+    display: none; /* shown via .mobile-only media query */
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 5px;
+    width: 44px;
+    height: 44px;
+    padding: 10px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: var(--transition);
+    z-index: 10;
+}
+.hamburger-btn:hover { background: rgba(255,255,255,0.1); }
+.hamburger-btn span {
+    display: block;
+    width: 18px;
+    height: 2px;
+    background: var(--text-main);
+    border-radius: 2px;
+    transition: transform 0.3s ease, opacity 0.3s ease, width 0.3s ease;
+    transform-origin: center;
+}
+/* Animate to X when sidebar is open */
+.hamburger-btn.is-open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+.hamburger-btn.is-open span:nth-child(2) { opacity: 0; transform: scaleX(0); }
+.hamburger-btn.is-open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+/* Backdrop overlay */
+.sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    z-index: 1000;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+.sidebar-overlay.active {
+    display: block;
+    opacity: 1;
+}
+
+/* Mobile-only visibility */
 .mobile-only { display: none; }
-@media (max-width: 900px) {
-    .mobile-only { display: block; }
-    .sidebar { position: absolute; left: -320px; z-index: 1001; box-shadow: 20px 0 50px rgba(0,0,0,0.8); }
-    .sidebar.open { left: 0; }
+
+@media (max-width: 768px) {
+    .mobile-only { display: flex; }
+
+    /* Sidebar becomes a fixed drawer */
+    .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        height: 100%;
+        width: 290px;
+        z-index: 1001;
+        transform: translateX(-100%);
+        transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow: 8px 0 40px rgba(0, 0, 0, 0.8);
+        overflow-y: auto;
+    }
+    .sidebar.open {
+        transform: translateX(0);
+    }
+
+    /* Room code — prevent overflow/clipping */
+    .code-box {
+        flex-wrap: nowrap;
+        gap: 8px;
+        overflow: hidden;
+    }
+    .code-box span {
+        font-size: 1rem;
+        letter-spacing: 1.5px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+    }
+
+    /* Copy button — touch-friendly */
+    #copyCodeBtn {
+        width: 40px;
+        height: 40px;
+        flex-shrink: 0;
+        padding: 10px;
+    }
+
+    /* Chat header spacing on mobile */
+    .chat-header {
+        padding: 14px 16px;
+        gap: 12px;
+    }
+
+    /* Input area tighter on mobile */
+    .input-area {
+        padding: 14px 16px;
+        gap: 10px;
+    }
+
+    /* Messages less padding on mobile */
+    .messages-viewport {
+        padding: 20px 16px;
+        gap: 16px;
+    }
+
+    /* Message bubbles full-width-friendly */
+    .msg-row {
+        max-width: 92%;
+    }
+
+    /* Overlay card responsive */
+    .overlay-card {
+        padding: 30px 24px;
+        border-radius: 20px;
+    }
 }
 
 /* EMPTY STATE */
